@@ -8,6 +8,7 @@ Everything here is generic. Nothing in this repository describes a specific empl
 
 | Kit | What it is | Start here |
 |---|---|---|
+| [brain-lite](brain-lite/) | **Start here.** Low-maintenance project brain: say "save: …" and ask questions; Copilot files plans, releases, bugs, tests, reports, modules, processes and meetings, logs and commits. One file to copy. | [brain-lite/README.md](brain-lite/README.md) |
 | [second-brain](second-brain/) | A project-scoped Markdown "second brain" that Copilot maintains: meeting transcripts, plans, decisions, action items; rules, seven skills, templates, tests, a checker and a transcript importer | [second-brain/README.md](second-brain/README.md) |
 
 ## Using a kit on a machine without file transfer
