@@ -25,6 +25,8 @@ A low-maintenance "second brain" for **one project**, kept by GitHub Copilot. Yo
 прегледай мозъка
 ```
 
+After 3–4 weeks: [EVALUATION.md](EVALUATION.md) is a one-page check (10 questions, with and without the brain) of whether the brain actually helps.
+
 For more control and formal tests, see the full [second-brain](../second-brain/) kit.
 
 ## Status
