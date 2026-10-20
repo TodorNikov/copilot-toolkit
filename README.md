@@ -8,7 +8,7 @@ Everything here is generic. Nothing in this repository describes a specific empl
 
 | Kit | What it is | Start here |
 |---|---|---|
-| [second-brain](second-brain/) | A Markdown "second brain" that Copilot maintains: rules, five skills, templates, tests and a checker for write integrity | [second-brain/README.md](second-brain/README.md) |
+| [second-brain](second-brain/) | A project-scoped Markdown "second brain" that Copilot maintains: meeting transcripts, plans, decisions, action items; rules, seven skills, templates, tests, a checker and a transcript importer | [second-brain/README.md](second-brain/README.md) |
 
 ## Using a kit on a machine without file transfer
 

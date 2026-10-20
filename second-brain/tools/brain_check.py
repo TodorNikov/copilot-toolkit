@@ -19,7 +19,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-VERSION = "1.0"
+VERSION = "1.1"
 
 FOLDER_TYPES = {
     "raw": "source",
@@ -31,14 +31,18 @@ FOLDER_TYPES = {
     "wiki/people": "role",
     "wiki/howto": "howto",
     "wiki/questions": "question",
+    "wiki/meetings": "meeting",
+    "wiki/plans": "plan",
 }
-ROOT_PAGES = {"wiki/index.md": "index", "wiki/log.md": "log", "wiki/overview.md": "overview"}
+ROOT_PAGES = {"wiki/index.md": "index", "wiki/log.md": "log", "wiki/overview.md": "overview",
+              "wiki/actions.md": "actions"}
 
 KNOWLEDGE_STATUS = {"unreviewed", "partially_verified", "verified", "disputed", "superseded"}
 STATUS_BY_TYPE = {
     "source": {"captured"},
     "decision": {"proposed", "accepted", "rejected", "superseded"},
     "question": {"open", "answered", "dropped"},
+    "plan": {"draft", "active", "done", "dropped", "superseded"},
 }
 COMMON_FIELDS = ["type", "title", "tags", "status", "created", "updated"]
 REQUIRED_BY_TYPE = {
@@ -46,11 +50,13 @@ REQUIRED_BY_TYPE = {
     "index": ["type", "title", "tags"],
     "log": ["type", "title", "tags"],
     "overview": ["type", "title", "tags", "updated"],
+    "actions": ["type", "title", "tags", "updated"],
+    "meeting": COMMON_FIELDS + ["held"],
 }
-SCOPE_REQUIRED = {"project", "decision", "agent", "howto", "question"}
-INDEX_REQUIRED = {"project", "decision", "agent", "howto", "question"}
+SCOPE_REQUIRED = {"project", "decision", "agent", "howto", "question", "meeting", "plan"}
+INDEX_REQUIRED = {"project", "decision", "agent", "howto", "question", "plan"}
 ORIGINS = {"meeting", "chat", "doc-excerpt", "own-note", "web", "code-review", "other"}
-DATE_FIELDS = ["created", "updated", "captured", "verified_at", "review_after"]
+DATE_FIELDS = ["created", "updated", "captured", "held", "verified_at", "review_after"]
 
 REQUIRED_FILES = [
     "AGENTS.md",
@@ -60,21 +66,30 @@ REQUIRED_FILES = [
     ".github/skills/brain-correct/SKILL.md",
     ".github/skills/brain-decision/SKILL.md",
     ".github/skills/brain-lint/SKILL.md",
+    ".github/skills/brain-meeting/SKILL.md",
+    ".github/skills/brain-status/SKILL.md",
     "wiki/index.md",
     "wiki/log.md",
     "wiki/overview.md",
+    "wiki/actions.md",
     "templates/source.md",
     "templates/page.md",
     "templates/decision.md",
     "templates/agent.md",
+    "templates/meeting.md",
+    "templates/plan.md",
     "meta/regression-cases.md",
     "tools/brain_check.py",
+    "tools/import_source.py",
 ]
 
 STEM_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 RAW_STEM_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})-[a-z0-9]+(?:-[a-z0-9]+)*$")
 ADR_STEM_RE = re.compile(r"^adr-\d{4}-[a-z0-9]+(?:-[a-z0-9]+)*$")
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+ACTION_ROW_RE = re.compile(r"^\|\s*(A-\d{3,})\s*\|(.*)\|$")
+ACTION_STATUS = {"open", "done", "dropped"}
+PROJECT_SLUG_RE = re.compile(r"(?m)^Project slug:\s*`?([^`\s]+)`?\s*$")
 LINK_RE = re.compile(r"\[\[([^\]\n]+)\]\]")
 LOG_HEAD_RE = re.compile(r"^## (\d{4}-\d{2}-\d{2}) (?:\u2014|-) \S.*$")
 
@@ -269,6 +284,18 @@ def check(root, today, report=None):
                 r.add("ERROR", "E_SKILL_META", rel, err or "SKILL.md has no frontmatter")
             elif fields.get("name") != sk.name or not fields.get("description"):
                 r.add("ERROR", "E_SKILL_META", rel, "name must equal the folder name and description must be set")
+    project = None
+    for rel in ("AGENTS.md", ".github/copilot-instructions.md"):
+        if rel in texts:
+            for n, line in strip_code(enumerate(texts[rel].split("\n"), 1)):
+                if PLACEHOLDER_RES[0].search(line):
+                    r.add("ERROR", "E_PLACEHOLDER", f"{rel}:{n}", "unfilled {{placeholder}} - fill in the project values")
+    if "AGENTS.md" in texts:
+        m = PROJECT_SLUG_RE.search(texts["AGENTS.md"])
+        if m and STEM_RE.match(m.group(1)):
+            project = m.group(1)
+        else:
+            r.add("ERROR", "E_NO_PROJECT", "AGENTS.md", "needs a line 'Project slug: <lowercase-kebab-slug>'")
 
     notes = collect(root)
     stems = {}
@@ -308,12 +335,21 @@ def check(root, today, report=None):
                     r.add("WARN", "W_DATE_MISMATCH", rel, "file name date differs from captured")
             if ntype == "decision" and not ADR_STEM_RE.match(stem):
                 r.add("ERROR", "E_BAD_FILENAME", rel, "decision file name must be adr-NNNN-slug.md")
+            if ntype == "meeting":
+                m = RAW_STEM_RE.match(stem)
+                if not m:
+                    r.add("ERROR", "E_BAD_FILENAME", rel, "meeting file name must be YYYY-MM-DD-slug.md")
+                elif fields.get("held") and fields.get("held") != m.group(1):
+                    r.add("WARN", "W_DATE_MISMATCH", rel, "file name date differs from held")
         required = REQUIRED_BY_TYPE.get(ntype, COMMON_FIELDS)
         for key in required:
             if fields.get(key) in (None, "", []):
                 r.add("ERROR", "E_MISSING_FIELD", rel, f"required field '{key}' is missing or empty")
         if ntype in SCOPE_REQUIRED and not fields.get("scope"):
             r.add("ERROR", "E_MISSING_FIELD", rel, "required field 'scope' is missing or empty")
+        scope = fields.get("scope")
+        if project and isinstance(scope, str) and scope and scope not in (project, "general"):
+            r.add("WARN", "W_SCOPE_OTHER", rel, f"scope '{scope}' is neither this brain's project '{project}' nor 'general'")
         if "tags" in fields and not isinstance(fields["tags"], list):
             r.add("ERROR", "E_FRONTMATTER_PARSE", rel, "tags must be a list, e.g. tags: [project]")
         status = fields.get("status")
@@ -425,7 +461,33 @@ def check(root, today, report=None):
                 if last and d > last:
                     r.add("ERROR", "E_LOG_ORDER", f"{log_rel}:{n}", "newest entries must be on top")
                 last = d
+
+    actions_rel = "wiki/actions.md"
+    if actions_rel in texts:
+        seen = set()
+        for n, line in enumerate(texts[actions_rel].split("\n"), 1):
+            m = ACTION_ROW_RE.match(line.strip())
+            if not m:
+                continue
+            aid, cells = m.group(1), [c.strip() for c in m.group(2).split("|")]
+            if aid in seen:
+                r.add("ERROR", "E_ACTION_DUP", f"{actions_rel}:{n}", f"action id {aid} is used twice")
+            seen.add(aid)
+            if len(cells) != 5:
+                r.add("ERROR", "E_ACTION_ROW", f"{actions_rel}:{n}",
+                      "row must be | id | action | owner | due | source | status |")
+            elif cells[4] not in ACTION_STATUS:
+                r.add("ERROR", "E_BAD_STATUS", f"{actions_rel}:{n}", f"action status '{cells[4]}' not in {sorted(ACTION_STATUS)}")
     return r
+
+
+def action_ids(text):
+    ids = []
+    for line in text.replace("\r\n", "\n").split("\n"):
+        m = ACTION_ROW_RE.match(line.strip())
+        if m:
+            ids.append(m.group(1))
+    return ids
 
 
 def log_sections(text):
@@ -442,8 +504,10 @@ def snapshot(root):
             files[p.relative_to(root).as_posix()] = hashlib.sha256(p.read_bytes()).hexdigest()
     log = root / "wiki" / "log.md"
     sections = log_sections(log.read_bytes().decode("utf-8", "replace")) if log.is_file() else []
+    actions = root / "wiki" / "actions.md"
+    ids = action_ids(actions.read_bytes().decode("utf-8", "replace")) if actions.is_file() else []
     return {"version": VERSION, "taken": dt.datetime.now().isoformat(timespec="seconds"),
-            "files": files, "log_sections": sections}
+            "files": files, "log_sections": sections, "action_ids": ids}
 
 
 def diff(root, old, report=None):
@@ -463,6 +527,9 @@ def diff(root, old, report=None):
                 r.add("INFO", "I_MODIFIED", rel, "modified")
     for rel in sorted(set(nf) - set(of)):
         r.add("INFO", "I_ADDED", rel, "added")
+    for aid in old.get("action_ids", []):
+        if aid not in new["action_ids"]:
+            r.add("ERROR", "E_ACTION_REMOVED", "wiki/actions.md", f"action {aid} was removed; set its status instead")
     current = set(new["log_sections"])
     for sec in old["log_sections"]:
         if sec not in current:
@@ -477,14 +544,27 @@ def selftest():
     fm = lambda **kv: "---\n" + "".join(f"{k}: {v}\n" for k, v in kv.items()) + "---\n"
     today = dt.date(2026, 10, 20)
     good = {
-        "AGENTS.md": "# Rules\n",
+        "AGENTS.md": "# Rules\n\nProject slug: compliance-agent\nNever leave `{{placeholders}}` in notes.\n",
         ".github/copilot-instructions.md": "Follow AGENTS.md\n",
-        "tools/brain_check.py": "# copy\n",
+        "tools/brain_check.py": "# copy\n", "tools/import_source.py": "# copy\n",
         "templates/source.md": "x\n", "templates/page.md": "x\n",
         "templates/decision.md": "x\n", "templates/agent.md": "x\n",
+        "templates/meeting.md": "x\n", "templates/plan.md": "x\n",
+        "wiki/actions.md": fm(type="actions", title="Actions", tags="[actions]", updated="2026-10-20")
+        + "| id | action | owner | due | source | status |\n|---|---|---|---|---|---|\n"
+        + "| A-001 | Draft mapping set | Product Owner | 2026-11-01 | [[2026-10-20-kickoff-summary]] | open |\n",
+        "wiki/meetings/2026-10-20-kickoff-summary.md": fm(type="meeting", title="Kickoff", tags="[meeting]",
+                                                           status="unreviewed", scope="compliance-agent",
+                                                           created="2026-10-20", updated="2026-10-20",
+                                                           held="2026-10-20", sources="[2026-10-20-kickoff-notes]")
+        + "Kickoff of [[compliance-agent]]. Actions in [[actions]]. Plan: [[pilot-plan]].\n",
+        "wiki/plans/pilot-plan.md": fm(type="plan", title="Pilot plan", tags="[plan]", status="active",
+                                       scope="compliance-agent", created="2026-10-20", updated="2026-10-20")
+        + "Milestone: pilot review on 2026-11-14 for [[compliance-agent]].\n",
         "meta/regression-cases.md": "# Cases\n",
         "wiki/index.md": fm(type="index", title="Index", tags="[hub]")
-        + "- [[agent-design]]\n- [[adr-0001-use-skills]]\n- [[compliance-agent]]\n- [[kyc]]\n",
+        + "- [[agent-design]]\n- [[adr-0001-use-skills]]\n- [[compliance-agent]]\n- [[kyc]]\n- [[pilot-plan]]\n"
+        + "- [[2026-10-20-kickoff-summary]]\n- [[actions]]\n",
         "wiki/log.md": fm(type="log", title="Log", tags="[log]")
         + "## 2026-10-20 \u2014 Ingest kickoff\n- added [[agent-design]]\n\n## 2026-10-19 \u2014 Setup\n- scaffold\n",
         "wiki/overview.md": fm(type="overview", title="Overview", tags="[hub]", updated="2026-10-20")
@@ -508,7 +588,8 @@ def selftest():
                                     created="2026-10-20", updated="2026-10-20")
         + "Know Your Customer: identity checks before onboarding.\n",
     }
-    for name in ["brain-ingest", "brain-query", "brain-correct", "brain-decision", "brain-lint"]:
+    for name in ["brain-ingest", "brain-query", "brain-correct", "brain-decision", "brain-lint",
+                 "brain-meeting", "brain-status"]:
         good[f".github/skills/{name}/SKILL.md"] = fm(name=name, description="test skill") + "Steps.\n"
 
     def build(tmp, files):
@@ -542,6 +623,20 @@ def selftest():
         ("skill name mismatch", {".github/skills/brain-lint/SKILL.md": fm(name="lint", description="x") + "y\n"},
          None, {"E_SKILL_META"}),
         ("missing required file", {"__delete__": "templates/agent.md"}, None, {"E_MISSING_REQUIRED"}),
+        ("unfilled project placeholder", {"AGENTS.md": "Project slug: {{PROJECT_SLUG}}\n"}, None,
+         {"E_PLACEHOLDER", "E_NO_PROJECT"}),
+        ("note from another project", {"wiki/plans/pilot-plan.md": good["wiki/plans/pilot-plan.md"].replace(
+            "scope: compliance-agent", "scope: other-project")}, None, {"W_SCOPE_OTHER"}),
+        ("bad meeting filename", {"wiki/meetings/kickoff.md": good["wiki/meetings/2026-10-20-kickoff-summary.md"]},
+         None, {"E_BAD_FILENAME"}),
+        ("bad plan status", {"wiki/plans/pilot-plan.md": good["wiki/plans/pilot-plan.md"].replace(
+            "status: active", "status: unreviewed")}, None, {"E_BAD_STATUS"}),
+        ("duplicate action id", {"wiki/actions.md": good["wiki/actions.md"]
+                                 + "| A-001 | Other | PO | not stated | [[actions]] | open |\n"}, None, {"E_ACTION_DUP"}),
+        ("bad action status", {"wiki/actions.md": good["wiki/actions.md"].replace("| open |", "| finished |")},
+         None, {"E_BAD_STATUS"}),
+        ("action removed (diff)", {}, {"wiki/actions.md": good["wiki/actions.md"].split("| A-001")[0]},
+         {"E_ACTION_REMOVED"}),
         ("raw modified (diff)", {}, {"raw/2026-10-20-kickoff-notes.md": "edited\n"}, {"E_RAW_MODIFIED"}),
         ("log rewritten (diff)", {}, {"wiki/log.md": good["wiki/log.md"].replace("- scaffold", "- changed")},
          {"E_LOG_REWRITTEN"}),
